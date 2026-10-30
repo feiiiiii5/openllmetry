@@ -5,7 +5,7 @@ import logging
 import time
 
 from opentelemetry import context as context_api
-from opentelemetry.instrumentation.agno.utils import guard_trace, should_send_prompts
+from opentelemetry.instrumentation.agno.utils import guard_trace, guarded_span_context, should_send_prompts
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as GenAIAttributes
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace import SpanKind
@@ -45,7 +45,9 @@ class _FunctionCallExecuteWrapper:
             # than fail the call because instrumentation is unavailable.
             return wrapped(*args, **kwargs)
 
-        with span_context as span:
+        with guarded_span_context(span_context, logger, span_name) as span:
+            if span is None:
+                return wrapped(*args, **kwargs)
             with guard_trace(logger, span_name):
                 span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                 span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND,
@@ -127,7 +129,9 @@ class _FunctionCallAExecuteWrapper:
             # than fail the call because instrumentation is unavailable.
             return await wrapped(*args, **kwargs)
 
-        with span_context as span:
+        with guarded_span_context(span_context, logger, span_name) as span:
+            if span is None:
+                return await wrapped(*args, **kwargs)
             with guard_trace(logger, span_name):
                 span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                 span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND,

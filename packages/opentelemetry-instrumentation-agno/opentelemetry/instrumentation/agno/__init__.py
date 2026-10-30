@@ -14,6 +14,7 @@ from opentelemetry.instrumentation.agno.config import Config
 from opentelemetry.instrumentation.agno.streaming import AgnoAsyncStream, AgnoStream
 from opentelemetry.instrumentation.agno.utils import (
     guard_trace,
+    guarded_span_context,
     should_send_prompts,
 )
 from opentelemetry.instrumentation.agno.version import __version__
@@ -225,7 +226,9 @@ class _AgentRunWrapper:
             if span_context is None:
                 return wrapped(*args, **kwargs)
 
-            with span_context as span:
+            with guarded_span_context(span_context, logger, span_name) as span:
+                if span is None:
+                    return wrapped(*args, **kwargs)
                 with guard_trace(logger, span_name):
                     span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                     span.set_attribute(
@@ -387,7 +390,9 @@ class _AgentARunWrapper:
                 if span_context is None:
                     return await wrapped(*args, **kwargs)
 
-                with span_context as span:
+                with guarded_span_context(span_context, logger, span_name) as span:
+                    if span is None:
+                        return await wrapped(*args, **kwargs)
                     with guard_trace(logger, span_name):
                         span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                         span.set_attribute(
@@ -493,7 +498,9 @@ class _TeamRunWrapper:
             # than fail the call because instrumentation is unavailable.
             return wrapped(*args, **kwargs)
 
-        with span_context as span:
+        with guarded_span_context(span_context, logger, span_name) as span:
+            if span is None:
+                return wrapped(*args, **kwargs)
             with guard_trace(logger, span_name):
                 span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                 span.set_attribute(
@@ -576,7 +583,9 @@ class _TeamARunWrapper:
             # than fail the call because instrumentation is unavailable.
             return await wrapped(*args, **kwargs)
 
-        with span_context as span:
+        with guarded_span_context(span_context, logger, span_name) as span:
+            if span is None:
+                return await wrapped(*args, **kwargs)
             with guard_trace(logger, span_name):
                 span.set_attribute(GenAIAttributes.GEN_AI_SYSTEM, "agno")
                 span.set_attribute(

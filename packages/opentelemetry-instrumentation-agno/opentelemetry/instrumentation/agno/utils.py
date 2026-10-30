@@ -1,5 +1,6 @@
 import logging
 import traceback
+import sys
 from contextlib import contextmanager
 from typing import Any, Iterator
 from functools import wraps
@@ -30,7 +31,30 @@ def guard_trace(logger: logging.Logger, origin: str) -> Iterator[None]:
             traceback.format_exc(),
         )
         if Config.exception_logger:
-            Config.exception_logger(e)
+            try:
+                Config.exception_logger(e)
+            except Exception:
+                logger.debug(
+                    "OpenLLMetry exception logger failed in %s, error: %s",
+                    origin,
+                    traceback.format_exc(),
+                )
+
+
+@contextmanager
+def guarded_span_context(span_context, logger: logging.Logger, origin: str):
+    """Isolate lazy span entry and cleanup without swallowing application errors."""
+    span = None
+    with guard_trace(logger, origin):
+        span = span_context.__enter__()
+    if span is None:
+        yield None
+        return
+    try:
+        yield span
+    finally:
+        with guard_trace(logger, origin):
+            span_context.__exit__(*sys.exc_info())
 
 
 def dont_throw(func):

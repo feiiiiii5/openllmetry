@@ -9,12 +9,17 @@ wrapped callable and require both the exception and the error span.
 from types import SimpleNamespace
 
 import pytest
-from opentelemetry.instrumentation.agno import _AgentRunWrapper, _TeamARunWrapper
+from opentelemetry.instrumentation.agno import (
+    _AgentRunWrapper, _AgentARunWrapper, _TeamRunWrapper, _TeamARunWrapper,
+)
 from opentelemetry.instrumentation.agno._tool_wrappers import (
     _FunctionCallAExecuteWrapper,
     _FunctionCallExecuteWrapper,
 )
+from opentelemetry import trace
 from opentelemetry.trace import StatusCode
+from opentelemetry.sdk.trace import TracerProvider, SpanProcessor
+from opentelemetry.instrumentation.agno.config import Config
 
 
 class _Histogram:
@@ -122,3 +127,94 @@ def test_tool_execute_runs_when_tracer_fails():
     wrapper = _FunctionCallExecuteWrapper(_BrokenTracer(), histogram, histogram)
 
     assert wrapper(lambda *args, **kwargs: "result", _tool_instance(), (), {}) == "result"
+
+
+class _FailingProcessor(SpanProcessor):
+    def __init__(self, phase):
+        self.phase = phase
+
+    def on_start(self, span, parent_context=None):
+        if self.phase == "start":
+            raise RuntimeError("span start failed")
+
+    def on_end(self, span):
+        if self.phase == "end":
+            raise RuntimeError("span end failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper_type", [
+    _FunctionCallExecuteWrapper, _FunctionCallAExecuteWrapper,
+    _AgentRunWrapper, _AgentARunWrapper, _TeamRunWrapper, _TeamARunWrapper,
+])
+@pytest.mark.parametrize("phase", ["start", "end", "detach"])
+@pytest.mark.parametrize("tool_fails", [False, True])
+async def test_sdk_processor_failure_never_changes_the_wrapped_call(wrapper_type, phase, tool_fails, monkeypatch):
+    if phase == "detach":
+        detach = trace.context_api.detach
+
+        def broken_detach(token):
+            detach(token)
+            raise RuntimeError("span detach failed")
+
+        monkeypatch.setattr(trace.context_api, "detach", broken_detach)
+    provider = TracerProvider()
+    provider.add_span_processor(_FailingProcessor(phase))
+    histogram = _Histogram()
+    wrapper = wrapper_type(provider.get_tracer(__name__), histogram, histogram)
+    instance = _tool_instance() if "FunctionCall" in wrapper_type.__name__ else SimpleNamespace(name="test")
+    is_async = wrapper_type in (_FunctionCallAExecuteWrapper, _AgentARunWrapper, _TeamARunWrapper)
+    calls = []
+    failure = ValueError("application failed")
+    result = object()
+
+    def call():
+        calls.append(1)
+        if tool_fails:
+            raise failure
+        return result
+
+    async def async_call():
+        return call()
+
+    if tool_fails:
+        with pytest.raises(ValueError) as raised:
+            value = wrapper(async_call if is_async else call, instance, (), {})
+            if is_async:
+                await value
+        assert raised.value is failure
+    else:
+        value = wrapper(async_call if is_async else call, instance, (), {})
+        if is_async:
+            value = await value
+        assert value is result
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_exception_logger_failure_does_not_prevent_untraced_call(monkeypatch, is_async):
+    provider = TracerProvider()
+    provider.add_span_processor(_FailingProcessor("start"))
+
+    def logger(_error):
+        raise RuntimeError("callback failed")
+
+    monkeypatch.setattr(Config, "exception_logger", logger)
+    histogram = _Histogram()
+    wrapper_type = _FunctionCallAExecuteWrapper if is_async else _FunctionCallExecuteWrapper
+    wrapper = wrapper_type(provider.get_tracer(__name__), histogram, histogram)
+    calls = []
+
+    def call():
+        calls.append(1)
+        return "result"
+
+    async def async_call():
+        return call()
+
+    value = wrapper(async_call if is_async else call, _tool_instance(), (), {})
+    if is_async:
+        value = await value
+    assert value == "result"
+    assert calls == [1]
